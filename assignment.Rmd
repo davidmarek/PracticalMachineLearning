@@ -1,0 +1,147 @@
+---
+title: "Human Activity Recognition"
+author: "David Marek"
+output: html_document
+---
+
+Abstract
+--------
+
+We explored data from the Weight Lifting Exercise Dataset. 
+The approach for this dataset is to investigate how well an activity was performed by the test subject. Six young participants were asked to perform a set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions:
+
+* Exactly according to the specification (Class A)
+* Throwing the elbows to the fron (Class B)
+* Lifting the dumbbell only halfway (Class C)
+* Lowering the dumbbell only halfway (Class D)
+* Throwing the hips to the front (Class E)
+
+Each test subject had 4 accelerometers measuring his activity during the exercise. Positions of sensors:
+
+* Arm
+* Forearm
+* Belt
+* Dumbbell
+
+Preprocessing
+-------------
+
+There are 4 sensors, for each there are 38 variables. Roll, pitch, and yaw, recordings from accelerometer and gyroscope (x, y, z). Additional variables contain processed data from these recordings, e.g. max and min, amplitude, average value etc. Each record also contains some additional metadata like the id, username of the test subject and timestamps. We removed these metadata from the dataset, as they are either unrelated to the output (all users were asked to do all tasks), or would lead to overfitting (data are sorted by class and tasks were done one after another).
+
+```{r,message=FALSE,echo=FALSE}
+library(ggplot2)
+library(caret)
+library(randomForest)
+library(corrplot)
+source('multiplot.R')
+```
+```{r,message=FALSE,cache=TRUE}
+testing <- read.csv('pml-testing.csv')
+training <- read.csv('pml-training.csv')
+
+p1 <- ggplot(training, aes(X, classe, col = classe)) +
+      geom_point()
+
+p2 <- ggplot(training, aes(user_name, classe, col = classe)) +
+      geom_jitter() +
+      theme(axis.text.x = element_text(angle = 90, hjust=1))
+
+p3 <- ggplot(training, aes(raw_timestamp_part_2, classe, col = classe)) +
+      geom_jitter()
+
+p4 <- ggplot(training, aes(cvtd_timestamp, classe, col = classe)) + 
+      geom_jitter() + 
+      theme(axis.text.x = element_text(angle = 90, hjust=1, size = 8))
+
+multiplot(p1, p2, p3, p4, cols=2)
+```
+
+The dataset also contains 19216 rows with missing data in some columns. We decided to remove these columns. 
+
+```{r,message=FALSE}
+# Remove metadata
+testing <- testing[-c(1:7)]
+training <- training[-c(1:7)]
+
+# Remove columns which contain division by zero errors.
+all_factor_columns <- sapply(training, is.factor)
+all_factor_columns['classe'] <- FALSE
+testing <- testing[!all_factor_columns]
+training <- training[!all_factor_columns]
+
+# Remove columns with NA values.
+testing <- testing[,!(colSums(is.na(testing)) > 0)]
+training <- training[,!(colSums(is.na(training)) > 0)]
+```
+
+Next step is to remove highly correlated values.
+
+```{r, cache=TRUE}
+# Compute correlation.
+trainingCor <- cor(training[, 1:dim(training)[2] - 1])
+corrplot(trainingCor, tl.pos = "n")
+
+# Find and remove variables with high correlation.
+highlyCorrelated <- findCorrelation(trainingCor)
+
+training <- training[, -highlyCorrelated]
+testing <- testing[, -highlyCorrelated]
+```
+
+Training
+--------
+
+We first separated 30% of training data into a test set. This test set will be later used to evaluate the error rate of our model.
+
+```{r}
+set.seed(2015)
+trainIndex <- createDataPartition(training$classe, p = 0.7, list = FALSE)
+trainData <- training[trainIndex,]
+testData <- training[-trainIndex,]
+```
+
+We built a classification model by using a random forest method. Model was validated  using a 10-fold cross validation.
+
+```{r, eval=FALSE}
+seeds <- vector(mode = "list", length = 31)
+for(i in 1:31) seeds[[i]] <- sample.int(1000, ncol(trainData))
+seeds[[31]] <- sample.int(1000, 1)
+
+train_control <- trainControl(method = 'cv', number = 10, repeats=3)
+model <- train(classe ~ ., data = trainData, trControl = train_control, method = 'rf')
+```
+
+Evaluation
+----------
+
+We evaluated our model on test data that were withheld from the training dataset and therefore were never seen by the model.
+
+```{r, echo=FALSE}
+# Loading prepared model, as I used different PC to build the model.
+load('model.Rdata')
+```
+```{r}
+predicted <- predict(model, newdata = testData)
+confusionMatrix(predicted, testData$classe)
+```
+
+The accuracy on our test data is 0.99. This is caused by overfitting the training set. We trained our model on 70% of training data and withheld the rest. However, those 30% of data came from the same exercises, so they were very close to the rest of the data. 
+
+Different approach to testing would be to withhold one test subject from the training set. With this approach the accuracy was down to 0.51. The model was still very good at recognizing exercise done exactly according to specification (Class A).
+
+```
+## Statistics by Class:
+## 
+##                      Class: A Class: B Class: C Class: D Class: E
+## Sensitivity            0.9916   0.6145  0.15213  0.25514  0.24138
+## Specificity            0.6431   0.7721  0.99962  0.95354  0.98921
+```
+
+And finally here are predictions for the real testing dataset.
+
+```{r}
+test_predicted <- predict(model, newdata = testing)
+print(data.frame(problem = testing$problem_id, prediction = test_predicted))
+```
+
+
